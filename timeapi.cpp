@@ -1,4 +1,7 @@
+#include "application.h"
 #include "constants.h"
+
+
 
 UDP TimeUdp;
 
@@ -7,6 +10,9 @@ const char timeServer[] = "pool.ntp.org";
 const int NTP_PACKET_SIZE= 48; // NTP time stamp is in the first 48 bytes of the message
 
 byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+
+void sendNTPpacket(const char *address);
+String timeapi();
 
 
 String getTime(){
@@ -21,6 +27,7 @@ String getTime(){
 }
 
 
+
 String timeapi()
 {
 	sendNTPpacket(timeServer); // send an NTP packet to a time server
@@ -28,11 +35,11 @@ String timeapi()
 
     int t = 0;
     while(t<2000 && !TimeUdp.parsePacket()){
-        delay(1);
-        t += 1;
+        delay(2);
+        t += 2;
     }
     
-    if(t >= 2000)
+    if(t == 2000)
         return NULL;
     
     log("UDP Response Time:");
