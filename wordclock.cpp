@@ -1,6 +1,5 @@
+// This #include statement was automatically added by the Spark IDE.
 #include "constants.h"
-#include "timeapi.h"
-#include <time.h>
 
 // PINS
 const int serialClearPin = D0; //OE pin
@@ -8,17 +7,16 @@ const int outputEnablePin = D1; //OE pin
 const int clockPin = D3; //SRCLK pin
 const int latchPin = D4; // RCLK pin
 const int dataPin = D5; //SER pin
-const int photoresistorPin = A0;
-const int syncIntervalMillis = 1000*60*60*4; //sync every  4 hours
+const int photoresistorPin = A7;
+const int syncInterval = 60*60*4; //sync every  4 hours
+
+static unsigned char  const DEFAULT_TIME_ZONE = 2;
+static unsigned short const BRIGHTNESS_SMOOTH = 100; //higher value -> slower brightness change.
 
 // Variables
-float brightness_mult = 1;
-int time_offset_hour = 1;
-
-struct tm current_time;
-
-unsigned long lastSync = 0;
-unsigned long lastTick = 0;
+int const_brightness = -1;
+int brightness = 0;
+int lastSync = 0;
 
 int configure(String command){
     log("Received command:");
@@ -26,14 +24,16 @@ int configure(String command){
     char opcode = command.charAt(0);
     switch(opcode){
         case 'b':  //brightness
-            brightness_mult = command.substring(1).toFloat();
+            const_brightness = command.substring(1).toInt();
             break;
         case 't':  //timezone offset
-            time_offset_hour = command.substring(1).toInt();
-            lastSync = 0;
+            Time.zone(command.substring(1).toInt());
             break;
         case 'd':  //blink
             blink();
+            break;
+        case 'a':  //blink
+            show_all();
             break;
         default:
             return -1;
@@ -58,8 +58,12 @@ void setup() {
     pinMode(dataPin, OUTPUT);
     pinMode(photoresistorPin, INPUT_PULLDOWN);
     
+    Time.zone(DEFAULT_TIME_ZONE);
+    
     //register api call
     Spark.function("configure", configure);
+    Spark.variable("brightness", &brightness, INT);
+    
     
     log("Initialized!");
 }
@@ -72,59 +76,45 @@ void loop() {
     debug("Show time...");
     showTime();
     debug("Done! Sleeping...");
-    delay(100);
+    delay(BRIGHTNESS_SMOOTH);
 }
-
-void syncTime(){
-    log("Sync time...");
-    const char *time_details = getTime().c_str(); // FIXME
-    strptime(time_details, "%H:%M:%S", &current_time);
-    current_time.tm_hour = (current_time.tm_hour + time_offset_hour) % 24; //we don't care about day etc...
-}
-
 
 void adjustTime(){
-    
-    unsigned long currTick = millis() / 1000;
-    unsigned short secondsToAdd = currTick - lastTick;
-    while(secondsToAdd > 0){
-        current_time.tm_sec++;
-        if(current_time.tm_sec == 60){
-            current_time.tm_sec = 0;
-            current_time.tm_min++;
-            if(current_time.tm_min == 60){
-                current_time.tm_min = 0;
-                current_time.tm_hour = (current_time.tm_hour + 1) % 24; //we don't care about day etc...
-            }
-        }
-        secondsToAdd--;
-    }
-    lastTick = currTick;
-    char logmsg[24];
-    sprintf(logmsg, "Time adjusted: %02d:%02d:%02d", current_time.tm_hour, current_time.tm_min, current_time.tm_sec);
-    debug(logmsg);
-    
-    if(lastSync == 0 || // 0 -> always resync
-      (lastSync + syncIntervalMillis < millis()) || 
-      (lastSync > millis())) { // overflow
-        syncTime();
-        lastSync = millis();
+    if(lastSync + syncInterval < Time.now()) {
+        Spark.syncTime();
+        lastSync = Time.now();
     }
 
 }
 
+static unsigned short const start = 2600;
+static unsigned short const stop = 3500;
+static unsigned char  const smooth = 1;
 short brightnessCached = -1;
 void adjustBrightness() {
-    unsigned char b = 255; //TODO: Calc from photoresistor
-    if(0 <= brightness_mult && brightness_mult <= 1){
-        b *= brightness_mult;
-    } else if(-255 <= brightness_mult) {
-        b = -brightness_mult;
+    
+    
+    brightness = analogRead(photoresistorPin);
+
+    short b = map(
+        constrain(brightness, start, stop),
+        start, stop, 
+        1-smooth, 255+smooth);
+
+    if(brightnessCached == -1){
+        b = constrain(b, 1, 255);
+    } else if(const_brightness >= 0){
+        b = constrain(const_brightness, 0, 255);
+    } else if(brightnessCached < b-smooth) {
+        b = brightnessCached + 1;
+    } else if(brightnessCached > b+smooth) {
+        b = brightnessCached - 1;
+    } else {
+        return;
     }
-    if(brightnessCached != b) {
-        analogWrite(outputEnablePin, 255 - b);
-        brightnessCached = b;
-    }
+    
+    analogWrite(outputEnablePin, 255 - b);
+    brightnessCached = b;
 }
 
 void shiftOutArray(unsigned char out[]) {
@@ -148,8 +138,8 @@ void shiftOutArray(unsigned char out[]) {
 void showTime(){
     unsigned char out[] = {0, 0, 0, 0};
     
-    unsigned char hour = current_time.tm_hour % 12;
-    unsigned char min = current_time.tm_min;
+    unsigned char hour = Time.hour() % 12;
+    unsigned char min = Time.minute();
     
     ES_IST;
     
@@ -273,4 +263,13 @@ void blink(){
             delay(250);
         }
     }
+}
+
+void show_all(){
+    digitalWrite(outputEnablePin, LOW);
+
+    unsigned char out[] = {255,255,255,255};
+    shiftOutArray(out);
+    Spark.sleep(240);
+    delay(240*1000);
 }

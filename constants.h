@@ -2,6 +2,7 @@
 #define log(arg) DebugSerial.println(arg)
 #define debug(arg) ""
 
+
 #define bitSet(value, bit) ((value) |= (1UL << (bit)))
 
 
