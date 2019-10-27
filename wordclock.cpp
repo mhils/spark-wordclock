@@ -8,24 +8,21 @@ const int clockPin = D3; //SRCLK pin
 const int latchPin = D4; // RCLK pin
 const int dataPin = D5; //SER pin
 const int photoresistorPin = A7;
-const int syncInterval = 60*60*4; //sync every  4 hours
 
-static unsigned char  const DEFAULT_TIME_ZONE = 2;
+static unsigned long  const ONE_DAY_MILLIS = 24 * 60 * 60 * 1000;
+static unsigned char  const DEFAULT_TIME_ZONE = 1;
 static unsigned short const BRIGHTNESS_SMOOTH = 100; //higher value -> slower brightness change.
 
+SYSTEM_MODE(SEMI_AUTOMATIC);
+
 // Variables
-int const_brightness = -1;
 int brightness = 0;
-int lastSync = 0;
 
 int configure(String command){
     log("Received command:");
     log(command);
     char opcode = command.charAt(0);
     switch(opcode){
-        case 'b':  //brightness
-            const_brightness = command.substring(1).toInt();
-            break;
         case 't':  //timezone offset
             Time.zone(command.substring(1).toInt());
             break;
@@ -59,13 +56,22 @@ void setup() {
     pinMode(photoresistorPin, INPUT_PULLDOWN);
     
     Time.zone(DEFAULT_TIME_ZONE);
+    Time.setDSTOffset(1.0);
     
-    //register api call
-    Spark.function("configure", configure);
-    Spark.variable("brightness", &brightness, INT);
+    log("Connecting to particle cloud...");
     
+    Particle.connect();
+    if(waitFor(Particle.connected, 10000)) {
+        log("Connected.");
+        //register api calls
+        Spark.function("configure", configure);
+        Spark.variable("brightness", &brightness, INT);
+    } else {
+        log("No connection.");
+        Time.setTime(946728010); // ten seconds after noon, because we have just waited ten seconds.
+    }
     
-    log("Initialized!");
+    log("Initialized.");
 }
 
 void loop() {
@@ -79,22 +85,59 @@ void loop() {
     delay(BRIGHTNESS_SMOOTH);
 }
 
+unsigned long lastSync = 0;
 void adjustTime(){
-    if(lastSync + syncInterval < Time.now()) {
-        Spark.syncTime();
-        lastSync = Time.now();
+    // if there is no cloud connection, we can neither
+    // update the time nor do we want to account for DST changes,
+    // as the user cannot set the date.
+    if (!Particle.connected()) {
+        return;
     }
-
+    if (millis() - lastSync > ONE_DAY_MILLIS) {
+        Particle.syncTime();
+        lastSync = millis();
+    }
+    adjustDST();
 }
 
-static unsigned short const start = 2600;
-static unsigned short const stop = 3500;
+void adjustDST(){
+    int hour = Time.hour(),
+        day = Time.day(),
+        month = Time.month(),
+        year = Time.year();
+        
+    // adapted from https://en.wikipedia.org/wiki/Summer_Time_in_Europe
+    int startDstDay = 31 - ((((5 * year) / 4) + 4) % 7);  // Day in March
+    int stopDstDay  = 31 - ((((5 * year) / 4) + 1) % 7);  // Day in October
+    
+    bool isDST = (
+        (3 < month && month < 10) 
+        ||
+        (month == 3 && day > startDstDay)
+        ||
+        (month == 3 && day == startDstDay && hour >= 2)
+        ||
+        (month == 10 && day < stopDstDay)
+        ||
+        (month == 10 && day == stopDstDay && hour < (2 + (Time.isDST() ? Time.getDSTOffset() : 0 )))
+    );
+    
+    if (isDST) {
+        Time.beginDST();
+    } else {
+        Time.endDST();
+    }
+}
+
+
+static unsigned short const start = 200;
+static unsigned short const stop = 1000;
 static unsigned char  const smooth = 1;
 short brightnessCached = -1;
 void adjustBrightness() {
     
-    
     brightness = analogRead(photoresistorPin);
+    log(brightness);
 
     short b = map(
         constrain(brightness, start, stop),
@@ -103,8 +146,6 @@ void adjustBrightness() {
 
     if(brightnessCached == -1){
         b = constrain(b, 1, 255);
-    } else if(const_brightness >= 0){
-        b = constrain(const_brightness, 0, 255);
     } else if(brightnessCached < b-smooth) {
         b = brightnessCached + 1;
     } else if(brightnessCached > b+smooth) {
